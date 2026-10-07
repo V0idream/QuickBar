@@ -10,6 +10,7 @@ object OverlayPreferences {
     const val KEY_SPAN_COUNT = "span_count"
     const val KEY_X = "x"
     const val KEY_Y = "y"
+    const val KEY_CLIPBOARD_MONITOR = "clipboard_monitor"
 
     const val ORIENTATION_HORIZONTAL = "horizontal"
     const val ORIENTATION_VERTICAL = "vertical"
@@ -47,5 +48,12 @@ object OverlayPreferences {
             .putInt(KEY_X, x)
             .putInt(KEY_Y, y)
             .apply()
+    }
+
+    fun clipboardMonitoring(context: Context): Boolean =
+        prefs(context).getBoolean(KEY_CLIPBOARD_MONITOR, false)
+
+    fun setClipboardMonitoring(context: Context, enabled: Boolean) {
+        prefs(context).edit().putBoolean(KEY_CLIPBOARD_MONITOR, enabled).apply()
     }
 }

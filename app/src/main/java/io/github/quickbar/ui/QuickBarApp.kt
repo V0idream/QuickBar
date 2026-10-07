@@ -569,6 +569,12 @@ private fun SettingsScreen(modifier: Modifier) {
             )
         }
         item {
+            InfoCard(
+                title = "剪贴板快捷项",
+                body = "悬浮栏上的剪贴板图标用于开启或关闭临时剪贴板历史。开启后，QuickBar 会尽可能捕获你复制的文本，并生成“剪贴板 1、2……”快捷按钮；最多保留 20 条，服务重启后清空，系统标记为敏感的内容不会保存。Android 10+ 会限制后台应用直接读取剪贴板，因此部分应用中的复制操作可能只能通过无障碍选择事件捕获。",
+            )
+        }
+        item {
             Card {
                 Column(Modifier.padding(18.dp)) {
                     Text("关于 QuickBar", style = MaterialTheme.typography.titleLarge)

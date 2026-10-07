@@ -1,9 +1,13 @@
 package io.github.quickbar.service
 
 import android.accessibilityservice.AccessibilityService
+import android.os.SystemClock
 import android.view.accessibility.AccessibilityEvent
 import android.widget.Toast
 import io.github.quickbar.data.AppDatabase
+import io.github.quickbar.data.OverlayPreferences
+import io.github.quickbar.data.ScriptEntity
+import io.github.quickbar.data.SnippetEntity
 import io.github.quickbar.data.StepType
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -20,12 +24,21 @@ class QuickBarAccessibilityService : AccessibilityService() {
     private lateinit var database: AppDatabase
     private lateinit var input: InputController
     private lateinit var overlay: OverlayController
+    private lateinit var clipboardCapture: ClipboardCaptureController
     private var scriptJob: Job? = null
+    private var currentSnippets: List<SnippetEntity> = emptyList()
+    private var currentScripts: List<ScriptEntity> = emptyList()
+    private val clipboardShortcuts = ArrayDeque<ClipboardShortcut>()
+    private var lastClipboardText: String? = null
+    private var lastClipboardAt = 0L
 
     override fun onServiceConnected() {
         super.onServiceConnected()
         database = AppDatabase.get(this)
         input = InputController(this)
+        clipboardCapture = ClipboardCaptureController(this) { text ->
+            addClipboardShortcut(text)
+        }
         overlay = OverlayController(
             service = this,
             onSnippetClick = { snippet ->
@@ -34,8 +47,16 @@ class QuickBarAccessibilityService : AccessibilityService() {
                 }
             },
             onScriptClick = { script -> runScript(script.id, script.name) },
+            onClipboardClick = { item ->
+                if (!input.insertText(item.content)) {
+                    toast("没有找到可编辑的输入框")
+                }
+            },
+            onClipboardToggle = { enabled -> setClipboardMonitoring(enabled) },
+            onQuotePasteClick = { pasteClipboardQuote() },
         )
         overlay.show()
+        clipboardCapture.setEnabled(OverlayPreferences.clipboardMonitoring(this))
 
         serviceScope.launch {
             combine(
@@ -43,20 +64,22 @@ class QuickBarAccessibilityService : AccessibilityService() {
                 database.scriptDao().observeEnabled(),
             ) { snippets, scripts -> snippets to scripts }
                 .collectLatest { (snippets, scripts) ->
-                    overlay.update(snippets, scripts)
+                    currentSnippets = snippets
+                    currentScripts = scripts
+                    refreshOverlay()
                 }
         }
     }
 
     override fun onAccessibilityEvent(event: AccessibilityEvent?) {
-        // The overlay intentionally stays available while the service is enabled.
-        // All input actions still target only the currently focused editable node.
+        if (::clipboardCapture.isInitialized) clipboardCapture.onAccessibilityEvent(event)
     }
 
     override fun onInterrupt() = Unit
 
     override fun onDestroy() {
         scriptJob?.cancel()
+        if (::clipboardCapture.isInitialized) clipboardCapture.destroy()
         if (::overlay.isInitialized) overlay.destroy()
         serviceScope.cancel()
         super.onDestroy()
@@ -103,5 +126,57 @@ class QuickBarAccessibilityService : AccessibilityService() {
 
     private fun toast(message: String) {
         Toast.makeText(this, message, Toast.LENGTH_SHORT).show()
+    }
+
+    private fun pasteClipboardQuote() {
+        val current = clipboardCapture.currentClipboardText()
+        val recent = clipboardShortcuts.firstOrNull()
+            ?.takeIf { OverlayPreferences.clipboardMonitoring(this) &&
+                SystemClock.uptimeMillis() - lastClipboardAt < 120_000L }
+            ?.content
+        val text = current ?: recent
+        if (text.isNullOrBlank()) {
+            toast("未读取到文本，请开启剪贴板快捷项并重新复制")
+            return
+        }
+        if (!input.insertQuote(text)) {
+            toast("请先打开当前对话并聚焦输入框后重试")
+        }
+    }
+
+    private fun setClipboardMonitoring(enabled: Boolean) {
+        OverlayPreferences.setClipboardMonitoring(this, enabled)
+        clipboardCapture.setEnabled(enabled)
+        refreshOverlay()
+        toast(if (enabled) "剪贴板快捷项已开启" else "剪贴板快捷项已关闭")
+    }
+
+    private fun addClipboardShortcut(content: String) {
+        val normalized = content.trimEnd('\r', '\n')
+        if (normalized.isBlank()) return
+
+        val now = SystemClock.uptimeMillis()
+        if (normalized == lastClipboardText && now - lastClipboardAt < 900L) return
+        lastClipboardText = normalized
+        lastClipboardAt = now
+
+        clipboardShortcuts.addFirst(
+            ClipboardShortcut(
+                id = SystemClock.elapsedRealtimeNanos(),
+                content = normalized,
+            ),
+        )
+        while (clipboardShortcuts.size > 20) clipboardShortcuts.removeLast()
+        refreshOverlay()
+    }
+
+    private fun refreshOverlay() {
+        if (!::overlay.isInitialized) return
+        overlay.update(
+            snippets = currentSnippets,
+            scripts = currentScripts,
+            clipboardEnabled = OverlayPreferences.clipboardMonitoring(this),
+            clipboardItems = clipboardShortcuts.toList(),
+        )
     }
 }

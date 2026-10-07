@@ -14,9 +14,25 @@ class InputController(
     fun insertText(textToInsert: String): Boolean {
         if (textToInsert.isEmpty()) return true
         val node = focusedEditable() ?: return false
+        return insertIntoNode(node, textToInsert)
+    }
+
+    /** Insert a Markdown quote, using the current ChatGPT composer if it has lost focus. */
+    fun insertQuote(sourceText: String): Boolean {
+        val blockquote = MarkdownQuoteFormatter.format(sourceText)
+        if (blockquote.isEmpty()) return false
+        val node = focusedEditable() ?: findChatGPTComposer() ?: return false
+        if (node.isPassword) return false
+        val current = currentEditableText(node)
+        val start = node.textSelectionStart.takeIf { it in 0..current.length } ?: current.length
+        val prefix = if (start > 0 && current[start - 1] != '\n') "\n\n" else ""
+        return insertIntoNode(node, prefix + blockquote)
+    }
+
+    private fun insertIntoNode(node: AccessibilityNodeInfo, textToInsert: String): Boolean {
         if (node.isPassword) return pasteFallback(node, textToInsert)
 
-        val current = node.text?.toString().orEmpty()
+        val current = currentEditableText(node)
         val rawStart = node.textSelectionStart
         val rawEnd = node.textSelectionEnd
         val start = if (rawStart in 0..current.length) rawStart else current.length
@@ -83,6 +99,23 @@ class InputController(
     }
 
     fun hasFocusedEditable(): Boolean = focusedEditable() != null
+
+    private fun findChatGPTComposer(): AccessibilityNodeInfo? {
+        val root = activeRoot() ?: return null
+        // Only focus an unfocused field automatically when the current window is ChatGPT.
+        if (root.packageName?.toString() != "com.openai.chatgpt") return null
+        val candidates = mutableListOf<AccessibilityNodeInfo>()
+        collectEditableNodes(root, candidates)
+        val composer = candidates.singleOrNull() ?: return null
+        return composer.takeIf { it.performAction(AccessibilityNodeInfo.ACTION_FOCUS) }
+    }
+
+    private fun currentEditableText(node: AccessibilityNodeInfo): String {
+        if (node.isShowingHintText) {
+            return ""
+        }
+        return node.text?.toString().orEmpty()
+    }
 
     private fun focusedEditable(): AccessibilityNodeInfo? {
         val root = activeRoot() ?: return null

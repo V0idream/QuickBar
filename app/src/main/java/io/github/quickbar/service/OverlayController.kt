@@ -33,6 +33,9 @@ class OverlayController(
     private val service: AccessibilityService,
     private val onSnippetClick: (SnippetEntity) -> Unit,
     private val onScriptClick: (ScriptEntity) -> Unit,
+    private val onClipboardClick: (ClipboardShortcut) -> Unit,
+    private val onClipboardToggle: (Boolean) -> Unit,
+    private val onQuotePasteClick: () -> Unit,
 ) {
     private val windowManager = service.getSystemService(WindowManager::class.java)
     private val prefs = OverlayPreferences.prefs(service)
@@ -40,6 +43,8 @@ class OverlayController(
     private var params: WindowManager.LayoutParams? = null
     private var snippets: List<SnippetEntity> = emptyList()
     private var scripts: List<ScriptEntity> = emptyList()
+    private var clipboardEnabled = false
+    private var clipboardItems: List<ClipboardShortcut> = emptyList()
     private var collapsed = false
     private var scriptMode = false
 
@@ -66,9 +71,13 @@ class OverlayController(
     fun update(
         snippets: List<SnippetEntity>,
         scripts: List<ScriptEntity>,
+        clipboardEnabled: Boolean,
+        clipboardItems: List<ClipboardShortcut>,
     ) {
         this.snippets = snippets
         this.scripts = scripts
+        this.clipboardEnabled = clipboardEnabled
+        this.clipboardItems = clipboardItems
         if (scriptMode && scripts.isEmpty()) scriptMode = false
         if (OverlayPreferences.isVisible(service)) rebuild()
     }
@@ -137,6 +146,22 @@ class OverlayController(
                 attachDragGesture(this)
             })
 
+            if (!collapsed) {
+                controls.addView(iconButton(
+                    iconRes = R.drawable.ic_clipboard_overlay,
+                    backgroundColor = if (clipboardEnabled) accentColor else buttonColor,
+                    iconColor = if (clipboardEnabled) Color.WHITE else textColor,
+                    description = if (clipboardEnabled) "关闭剪贴板快捷项" else "开启剪贴板快捷项",
+                ).apply {
+                    setOnClickListener { onClipboardToggle(!clipboardEnabled) }
+                })
+
+                controls.addView(pill("引用", buttonColor, textColor).apply {
+                    contentDescription = "以引用形式粘贴剪贴板文本"
+                    setOnClickListener { onQuotePasteClick() }
+                })
+            }
+
             if (!collapsed && scripts.isNotEmpty()) {
                 controls.addView(pill(if (scriptMode) "文本" else "⚡", buttonColor, textColor).apply {
                     setOnClickListener {
@@ -202,14 +227,25 @@ class OverlayController(
                 }
             }
         } else {
-            if (snippets.isEmpty()) {
-                grid.addView(label("长按 QB 打开设置", textColor))
-            } else {
-                snippets.forEach { snippet ->
-                    grid.addView(pill(snippet.name, buttonColor, textColor).apply {
-                        setOnClickListener { onSnippetClick(snippet) }
+            snippets.forEach { snippet ->
+                grid.addView(pill(snippet.name, buttonColor, textColor).apply {
+                    setOnClickListener { onSnippetClick(snippet) }
+                })
+            }
+            if (clipboardEnabled) {
+                clipboardItems.forEachIndexed { index, item ->
+                    grid.addView(pill("剪贴板 ${index + 1}", buttonColor, textColor).apply {
+                        setOnClickListener { onClipboardClick(item) }
                     })
                 }
+            }
+            if (snippets.isEmpty() && (!clipboardEnabled || clipboardItems.isEmpty())) {
+                grid.addView(
+                    label(
+                        if (clipboardEnabled) "等待复制内容" else "长按左侧图标打开设置",
+                        textColor,
+                    ),
+                )
             }
         }
 
@@ -279,6 +315,18 @@ class OverlayController(
         var downAt = 0L
         var dragged = false
 
+        handle.setOnClickListener {
+            collapsed = !collapsed
+            rebuild()
+        }
+        handle.setOnLongClickListener {
+            val intent = Intent(service, MainActivity::class.java).apply {
+                addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP)
+            }
+            service.startActivity(intent)
+            true
+        }
+
         handle.setOnTouchListener { _, event ->
             val lp = params ?: return@setOnTouchListener false
             when (event.actionMasked) {
@@ -311,13 +359,9 @@ class OverlayController(
                     } else if (event.actionMasked == MotionEvent.ACTION_UP) {
                         val heldMs = SystemClock.uptimeMillis() - downAt
                         if (heldMs >= 550L) {
-                            val intent = Intent(service, MainActivity::class.java).apply {
-                                addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP)
-                            }
-                            service.startActivity(intent)
+                            handle.performLongClick()
                         } else {
-                            collapsed = !collapsed
-                            rebuild()
+                            handle.performClick()
                         }
                     }
                     true
